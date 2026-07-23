@@ -1,7 +1,7 @@
 VSVersionInfo(
   ffi=FixedFileInfo(
-    filevers=(2, 0, 0, 0),
-    prodvers=(2, 0, 0, 0),
+    filevers=(2, 1, 0, 0),
+    prodvers=(2, 1, 0, 0),
     mask=0x3f,
     flags=0x0,
     OS=0x40004,
@@ -16,12 +16,12 @@ VSVersionInfo(
         [
           StringStruct(u'CompanyName', u'本地学习工具'),
           StringStruct(u'FileDescription', u'考研数学一公式智能离线检索与使用决策工具'),
-          StringStruct(u'FileVersion', u'2.0.0'),
+          StringStruct(u'FileVersion', u'2.1.0'),
           StringStruct(u'InternalName', u'KaoyanMathQuickRef'),
           StringStruct(u'LegalCopyright', u'Formula references credited in the application'),
-          StringStruct(u'OriginalFilename', u'研数公式速查-2.0.exe'),
-          StringStruct(u'ProductName', u'研数公式速查 2.0'),
-          StringStruct(u'ProductVersion', u'2.0.0')
+          StringStruct(u'OriginalFilename', u'研数公式速查-2.1.exe'),
+          StringStruct(u'ProductName', u'研数公式速查 2.1'),
+          StringStruct(u'ProductVersion', u'2.1.0')
         ]
       )
     ]),

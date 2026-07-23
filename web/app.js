@@ -2,7 +2,7 @@
   "use strict";
 
   const state = {
-    appVersion: "2.0.0",
+    appVersion: "2.1.0",
     formulas: [],
     sources: [],
     subjectOrder: [],
@@ -20,7 +20,12 @@
     quickMode: false,
     sidebarCollapsed: false,
     activeTab: "overview",
-    hotkeys: { primary: false, fallback: false },
+    hotkeys: {
+      configured: "Ctrl+Shift+Space",
+      active: null,
+      registered: false,
+      usingFallback: false,
+    },
     lastFocused: null,
   };
 
@@ -630,10 +635,11 @@
 
   function showShortcuts() {
     el.modalEyebrow.textContent = "KEYBOARD";
-    el.modalTitle.textContent = "快捷键与使用说明";
+    el.modalTitle.textContent = "快捷键设置与使用说明";
+    const configured = state.hotkeys.configured || "Ctrl+Shift+Space";
     const shortcuts = [
-      ["Ctrl + Shift + Space", "从任何位置唤出或隐藏窗口（主快捷键）"],
-      ["Ctrl + Alt + M", "备用全局快捷键"],
+      [displayShortcut(configured), "从任何位置唤出或隐藏窗口（可自定义）"],
+      ["Ctrl + Alt + M", "自定义组合键注册失败时的安全备用键"],
       ["Ctrl + K", "聚焦并全选搜索框"],
       ["↑ / ↓", "搜索框或结果区聚焦时移动选择"],
       ["Enter", "打开首条搜索结果"],
@@ -642,9 +648,147 @@
       ["Alt + 1 / 2 / 3", "切换高数、线代、概率"],
       ["Esc", "关闭弹窗、清空搜索或隐藏窗口"],
     ];
-    el.modalBody.innerHTML = `<div class="shortcut-grid">${shortcuts.map(([key, desc]) =>
-      `<div><kbd>${key}</kbd></div><div>${desc}</div>`).join("")}</div>`;
+    el.modalBody.innerHTML = `
+      <section class="hotkey-settings">
+        <div class="hotkey-settings-head">
+          <div>
+            <h3>全局唤出快捷键</h3>
+            <p>点击下方按键框，然后直接按下新的组合键。</p>
+          </div>
+          <span class="hotkey-state ${state.hotkeys.registered ? "is-ok" : "is-error"}">
+            ${state.hotkeys.registered
+              ? `${escapeHtml(displayShortcut(state.hotkeys.active || configured))} 已生效`
+              : "当前未注册"}
+          </span>
+        </div>
+        <button id="hotkey-recorder" class="hotkey-recorder" type="button"
+                data-shortcut="${escapeHtml(configured)}">
+          <span class="recorder-label">当前组合键</span>
+          <strong>${escapeHtml(displayShortcut(configured))}</strong>
+          <span class="recorder-tip">点击后录入</span>
+        </button>
+        <p class="hotkey-rule">至少包含 Ctrl、Alt 或 Win；支持字母、数字、Space、F1–F12。</p>
+        <div class="hotkey-actions">
+          <button id="hotkey-save" class="primary-button" type="button">应用新快捷键</button>
+          <button id="hotkey-reset" class="secondary-button" type="button">恢复默认</button>
+          <span id="hotkey-editor-status" class="hotkey-editor-status" aria-live="polite"></span>
+        </div>
+      </section>
+      <div class="shortcut-grid">${shortcuts.map(([key, desc]) =>
+        `<div><kbd>${escapeHtml(key)}</kbd></div><div>${desc}</div>`).join("")}</div>`;
+    bindHotkeyEditor();
     openModal();
+  }
+
+  function displayShortcut(shortcut) {
+    return String(shortcut || "").split("+").join(" + ");
+  }
+
+  function shortcutFromEvent(event) {
+    let key = "";
+    if (event.code === "Space") key = "Space";
+    else if (/^Key[A-Z]$/.test(event.code)) key = event.code.slice(3);
+    else if (/^Digit[0-9]$/.test(event.code)) key = event.code.slice(5);
+    else if (/^F(?:[1-9]|1[0-2])$/.test(event.key)) key = event.key.toUpperCase();
+    if (!key) return null;
+    const parts = [];
+    if (event.ctrlKey) parts.push("Ctrl");
+    if (event.altKey) parts.push("Alt");
+    if (event.shiftKey) parts.push("Shift");
+    if (event.metaKey) parts.push("Win");
+    if (!event.ctrlKey && !event.altKey && !event.metaKey) return "modifier-required";
+    parts.push(key);
+    return parts.join("+");
+  }
+
+  function bindHotkeyEditor() {
+    const recorder = $("#hotkey-recorder");
+    const saveButton = $("#hotkey-save");
+    const resetButton = $("#hotkey-reset");
+    const status = $("#hotkey-editor-status");
+    if (!recorder || !saveButton || !resetButton || !status) return;
+
+    const showRecorded = shortcut => {
+      recorder.dataset.shortcut = shortcut;
+      recorder.querySelector(".recorder-label").textContent = "准备应用";
+      recorder.querySelector("strong").textContent = displayShortcut(shortcut);
+      recorder.querySelector(".recorder-tip").textContent = "可继续修改";
+      status.textContent = "点击“应用新快捷键”后立即生效";
+      status.className = "hotkey-editor-status";
+    };
+
+    const applyShortcut = async shortcut => {
+      saveButton.disabled = true;
+      resetButton.disabled = true;
+      status.textContent = "正在检查组合键是否可用…";
+      status.className = "hotkey-editor-status";
+      try {
+        const result = await window.pywebview?.api?.set_hotkey(shortcut);
+        if (!result) throw new Error("快捷键服务无响应");
+        state.hotkeys = { ...state.hotkeys, ...result };
+        status.textContent = result.message || (result.ok ? "快捷键已生效" : "设置失败");
+        status.className = `hotkey-editor-status ${result.ok ? "is-ok" : "is-error"}`;
+        if (result.ok) {
+          const current = result.configured || shortcut;
+          recorder.dataset.shortcut = current;
+          recorder.querySelector(".recorder-label").textContent = "当前组合键";
+          recorder.querySelector("strong").textContent = displayShortcut(current);
+          recorder.querySelector(".recorder-tip").textContent = "点击后录入";
+          renderRuntimeStatus(false);
+        }
+      } catch (error) {
+        status.textContent = error.message || "设置失败，请重试";
+        status.className = "hotkey-editor-status is-error";
+      } finally {
+        saveButton.disabled = false;
+        resetButton.disabled = false;
+      }
+    };
+
+    recorder.addEventListener("click", () => {
+      recorder.classList.add("is-recording");
+      recorder.querySelector(".recorder-label").textContent = "正在录入";
+      recorder.querySelector("strong").textContent = "请按组合键…";
+      recorder.querySelector(".recorder-tip").textContent = "Esc 取消";
+      status.textContent = "";
+    });
+    recorder.addEventListener("blur", () => recorder.classList.remove("is-recording"));
+    recorder.addEventListener("keydown", event => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (event.key === "Escape") {
+        const current = state.hotkeys.configured || "Ctrl+Shift+Space";
+        recorder.dataset.shortcut = current;
+        recorder.querySelector(".recorder-label").textContent = "当前组合键";
+        recorder.querySelector("strong").textContent = displayShortcut(current);
+        recorder.querySelector(".recorder-tip").textContent = "点击后录入";
+        recorder.classList.remove("is-recording");
+        status.textContent = "已取消修改";
+        return;
+      }
+      if (["Control", "Alt", "Shift", "Meta"].includes(event.key)) {
+        recorder.querySelector("strong").textContent = "请再按一个普通按键…";
+        return;
+      }
+      const shortcut = shortcutFromEvent(event);
+      if (shortcut === "modifier-required") {
+        status.textContent = "至少需要 Ctrl、Alt 或 Win 中的一个";
+        status.className = "hotkey-editor-status is-error";
+        return;
+      }
+      if (!shortcut) {
+        status.textContent = "该按键暂不支持，请使用字母、数字、Space 或 F1–F12";
+        status.className = "hotkey-editor-status is-error";
+        return;
+      }
+      recorder.classList.remove("is-recording");
+      showRecorded(shortcut);
+    });
+    saveButton.addEventListener("click", () => applyShortcut(recorder.dataset.shortcut));
+    resetButton.addEventListener("click", () => {
+      showRecorded("Ctrl+Shift+Space");
+      applyShortcut("Ctrl+Shift+Space");
+    });
   }
 
   function switchTab(tab) {
@@ -748,25 +892,27 @@
     });
   }
 
-  function renderRuntimeStatus() {
+  function renderRuntimeStatus(showWarnings = true) {
     $("#app-version").textContent = `v${state.appVersion}`;
     $("#library-status").innerHTML = `<span class="status-dot"></span><span>${state.formulas.length} 条 · v${state.appVersion} · 已校验</span>`;
     const hotkeyHint = $("#hotkey-hint");
-    if (state.hotkeys.primary) {
-      hotkeyHint.innerHTML = "<kbd>Ctrl</kbd><span>+</span><kbd>Shift</kbd><span>+</span><kbd>Space</kbd><span>唤出</span>";
-    } else if (state.hotkeys.fallback) {
-      hotkeyHint.innerHTML = "<kbd>Ctrl</kbd><span>+</span><kbd>Alt</kbd><span>+</span><kbd>M</kbd><span>备用唤出</span>";
-      showToast("主快捷键被占用，已启用 Ctrl + Alt + M");
+    if (state.hotkeys.registered) {
+      const active = state.hotkeys.active || state.hotkeys.configured || "Ctrl+Shift+Space";
+      hotkeyHint.innerHTML = `${active.split("+").map(part =>
+        `<kbd>${escapeHtml(part)}</kbd>`).join("<span>+</span>")}<span>${state.hotkeys.usingFallback ? "备用唤出" : "唤出"}</span>`;
+      if (state.hotkeys.usingFallback && showWarnings) {
+        showToast(`${displayShortcut(state.hotkeys.configured)} 被占用，已启用 Ctrl + Alt + M`);
+      }
     } else {
       hotkeyHint.innerHTML = "<span>全局快捷键均被占用，请通过托盘唤出</span>";
-      showToast("全局快捷键注册失败，请通过托盘唤出");
+      if (showWarnings) showToast("全局快捷键注册失败，请通过托盘唤出");
     }
   }
 
   async function bootstrap() {
     try {
       const data = await window.pywebview.api.get_bootstrap();
-      state.appVersion = data.appVersion || "2.0.0";
+      state.appVersion = data.appVersion || "2.1.0";
       state.formulas = data.formulas.map((card, index) => ({
         ...card,
         tier: card.tier || (card.priority === "高频" ? "重要" : "扩展"),

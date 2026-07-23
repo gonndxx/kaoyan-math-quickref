@@ -1,4 +1,4 @@
-"""Windows entry point for 研数公式速查 2.0."""
+"""Windows entry point for 研数公式速查 2.1."""
 
 from __future__ import annotations
 
@@ -20,21 +20,88 @@ from PIL import Image, ImageDraw
 from formulas import CHAPTER_ORDER, FORMULAS, SOURCES, SUBJECT_ORDER
 
 
-APP_NAME = "研数公式速查 2.0"
-APP_VERSION = "2.0.0"
+APP_NAME = "研数公式速查 2.1"
+APP_VERSION = "2.1.0"
 APP_DIR_NAME = "KaoyanMathQuickRef"
 HOTKEY_ID = 0x4D51
 HOTKEY_FALLBACK_ID = 0x4D52
 WM_HOTKEY = 0x0312
+WM_HOTKEY_RELOAD = 0x8001
 WM_QUIT = 0x0012
 MOD_ALT = 0x0001
 MOD_CONTROL = 0x0002
 MOD_SHIFT = 0x0004
+MOD_WIN = 0x0008
 MOD_NOREPEAT = 0x4000
+PM_NOREMOVE = 0x0000
 SW_HIDE = 0
 SW_RESTORE = 9
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
+DEFAULT_HOTKEY = "Ctrl+Shift+Space"
+FALLBACK_HOTKEY = "Ctrl+Alt+M"
+
+NAMED_VIRTUAL_KEYS = {
+    "SPACE": ("Space", 0x20),
+    **{f"F{index}": (f"F{index}", 0x6F + index) for index in range(1, 13)},
+}
+
+
+def parse_hotkey(shortcut: str) -> dict:
+    """Validate and normalize a user-facing global shortcut."""
+    if not isinstance(shortcut, str):
+        raise ValueError("快捷键格式无效")
+    raw_parts = [part.strip() for part in shortcut.split("+") if part.strip()]
+    if len(raw_parts) < 2:
+        raise ValueError("快捷键必须包含修饰键和一个按键")
+
+    aliases = {
+        "CONTROL": "CTRL",
+        "CMD": "WIN",
+        "META": "WIN",
+        "WINDOWS": "WIN",
+    }
+    modifiers: set[str] = set()
+    key_name = ""
+    virtual_key = 0
+
+    for raw_part in raw_parts:
+        part = aliases.get(raw_part.upper(), raw_part.upper())
+        if part in {"CTRL", "ALT", "SHIFT", "WIN"}:
+            modifiers.add(part)
+            continue
+        if key_name:
+            raise ValueError("快捷键只能包含一个普通按键")
+        if len(part) == 1 and ("A" <= part <= "Z" or "0" <= part <= "9"):
+            key_name = part
+            virtual_key = ord(part)
+        elif part in NAMED_VIRTUAL_KEYS:
+            key_name, virtual_key = NAMED_VIRTUAL_KEYS[part]
+        else:
+            raise ValueError("仅支持字母、数字、Space 和 F1–F12")
+
+    if not key_name:
+        raise ValueError("请在修饰键后再按一个普通按键")
+    if not modifiers.intersection({"CTRL", "ALT", "WIN"}):
+        raise ValueError("至少需要 Ctrl、Alt 或 Win 中的一个")
+
+    modifier_flags = MOD_NOREPEAT
+    modifier_labels: list[str] = []
+    for name, label, flag in (
+        ("CTRL", "Ctrl", MOD_CONTROL),
+        ("ALT", "Alt", MOD_ALT),
+        ("SHIFT", "Shift", MOD_SHIFT),
+        ("WIN", "Win", MOD_WIN),
+    ):
+        if name in modifiers:
+            modifier_flags |= flag
+            modifier_labels.append(label)
+
+    return {
+        "shortcut": "+".join([*modifier_labels, key_name]),
+        "modifiers": modifier_flags,
+        "virtualKey": virtual_key,
+    }
 
 
 def resource_path(relative: str) -> Path:
@@ -57,6 +124,7 @@ class SettingsStore:
         "pinned": False,
         "quickMode": False,
         "sidebarCollapsed": False,
+        "hotkey": DEFAULT_HOTKEY,
         "width": 1180,
         "height": 780,
     }
@@ -81,6 +149,12 @@ class SettingsStore:
         self.data["pinned"] = bool(self.data.get("pinned", False))
         self.data["quickMode"] = bool(self.data.get("quickMode", False))
         self.data["sidebarCollapsed"] = bool(self.data.get("sidebarCollapsed", False))
+        try:
+            self.data["hotkey"] = parse_hotkey(
+                self.data.get("hotkey", DEFAULT_HOTKEY)
+            )["shortcut"]
+        except ValueError:
+            self.data["hotkey"] = DEFAULT_HOTKEY
 
     def save(self) -> None:
         with self.lock:
@@ -107,7 +181,12 @@ class Application:
         self.visible = True
         self.exiting = False
         self.hotkey_thread_id = 0
-        self.registered_hotkeys: set[int] = set()
+        self.registered_hotkeys: dict[int, dict] = {}
+        self.hotkey_ready = threading.Event()
+        self.hotkey_change_done = threading.Event()
+        self.hotkey_change_request: dict | None = None
+        self.hotkey_change_result: dict | None = None
+        self.hotkey_lock = threading.RLock()
         self.state_lock = threading.RLock()
         self.resize_timer: threading.Timer | None = None
         self.allowed_hosts = {
@@ -251,25 +330,160 @@ class Application:
         self.tray = pystray.Icon(APP_DIR_NAME, self._tray_image(), APP_NAME, menu)
         threading.Thread(target=self.tray.run, name="formula-tray", daemon=True).start()
 
+    def _register_hotkey(self, user32, hotkey_id: int, spec: dict) -> bool:
+        registered = user32.RegisterHotKey(
+            None,
+            hotkey_id,
+            spec["modifiers"],
+            spec["virtualKey"],
+        )
+        if registered:
+            self.registered_hotkeys[hotkey_id] = dict(spec)
+        return bool(registered)
+
+    def _unregister_all_hotkeys(self, user32) -> None:
+        for hotkey_id in tuple(self.registered_hotkeys):
+            user32.UnregisterHotKey(None, hotkey_id)
+        self.registered_hotkeys.clear()
+
+    def _register_with_fallback(self, user32, preferred: dict) -> None:
+        if self._register_hotkey(user32, HOTKEY_ID, preferred):
+            return
+        fallback = parse_hotkey(FALLBACK_HOTKEY)
+        if fallback["shortcut"] != preferred["shortcut"]:
+            self._register_hotkey(user32, HOTKEY_FALLBACK_ID, fallback)
+
+    def _apply_hotkey_change(self, user32, requested: dict | None) -> dict:
+        previous_id, previous = next(
+            iter(self.registered_hotkeys.items()),
+            (None, None),
+        )
+        self._unregister_all_hotkeys(user32)
+        if requested and self._register_hotkey(user32, HOTKEY_ID, requested):
+            return {
+                "ok": True,
+                "message": f"{requested['shortcut']} 已立即生效",
+            }
+
+        if previous and previous_id is not None:
+            self._register_hotkey(user32, previous_id, previous)
+        if not self.registered_hotkeys:
+            self._register_hotkey(
+                user32,
+                HOTKEY_FALLBACK_ID,
+                parse_hotkey(FALLBACK_HOTKEY),
+            )
+        return {
+            "ok": False,
+            "error": "in_use",
+            "message": "该组合键已被其他程序占用，原快捷键仍然有效",
+        }
+
+    def hotkey_status(self) -> dict:
+        with self.hotkey_lock:
+            active_id = next(iter(self.registered_hotkeys), None)
+            active = self.registered_hotkeys.get(active_id, {})
+            return {
+                "configured": self.settings.data.get("hotkey", DEFAULT_HOTKEY),
+                "active": active.get("shortcut"),
+                "registered": active_id is not None,
+                "usingFallback": active_id == HOTKEY_FALLBACK_ID,
+            }
+
+    def update_hotkey(self, shortcut: str) -> dict:
+        try:
+            requested = parse_hotkey(shortcut)
+        except ValueError as error:
+            return {
+                "ok": False,
+                "error": "invalid",
+                "message": str(error),
+                **self.hotkey_status(),
+            }
+        if sys.platform != "win32":
+            return {
+                "ok": False,
+                "error": "unsupported",
+                "message": "当前系统不支持 Windows 全局快捷键",
+                **self.hotkey_status(),
+            }
+        if not self.hotkey_ready.wait(timeout=1.5):
+            return {
+                "ok": False,
+                "error": "not_ready",
+                "message": "快捷键服务尚未就绪，请稍后重试",
+                **self.hotkey_status(),
+            }
+
+        status = self.hotkey_status()
+        if (
+            status["registered"]
+            and not status["usingFallback"]
+            and status["active"] == requested["shortcut"]
+        ):
+            self.settings.set("hotkey", requested["shortcut"])
+            return {"ok": True, "message": "快捷键已启用", **self.hotkey_status()}
+
+        with self.hotkey_lock:
+            self.hotkey_change_request = requested
+            self.hotkey_change_result = None
+            self.hotkey_change_done.clear()
+        if not ctypes.windll.user32.PostThreadMessageW(
+            self.hotkey_thread_id,
+            WM_HOTKEY_RELOAD,
+            0,
+            0,
+        ):
+            return {
+                "ok": False,
+                "error": "service_error",
+                "message": "无法通知快捷键服务",
+                **self.hotkey_status(),
+            }
+        if not self.hotkey_change_done.wait(timeout=2.0):
+            return {
+                "ok": False,
+                "error": "timeout",
+                "message": "快捷键注册超时，请重试",
+                **self.hotkey_status(),
+            }
+
+        with self.hotkey_lock:
+            result = dict(self.hotkey_change_result or {})
+        if result.get("ok"):
+            self.settings.set("hotkey", requested["shortcut"])
+        return {**result, **self.hotkey_status()}
+
     def hotkey_loop(self) -> None:
         if sys.platform != "win32":
+            self.hotkey_ready.set()
             return
         user32 = ctypes.windll.user32
         kernel32 = ctypes.windll.kernel32
         self.hotkey_thread_id = kernel32.GetCurrentThreadId()
-        hotkeys = (
-            (HOTKEY_ID, MOD_CONTROL | MOD_ALT | MOD_NOREPEAT, ord("M")),
-            (HOTKEY_FALLBACK_ID, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x20),
-        )
-        for hotkey_id, modifiers, virtual_key in hotkeys:
-            if user32.RegisterHotKey(None, hotkey_id, modifiers, virtual_key):
-                self.registered_hotkeys.add(hotkey_id)
         message = wintypes.MSG()
+        user32.PeekMessageW(ctypes.byref(message), None, 0, 0, PM_NOREMOVE)
+        with self.hotkey_lock:
+            self._register_with_fallback(
+                user32,
+                parse_hotkey(self.settings.data.get("hotkey", DEFAULT_HOTKEY)),
+            )
+        self.hotkey_ready.set()
+
         while user32.GetMessageW(ctypes.byref(message), None, 0, 0) > 0:
             if message.message == WM_HOTKEY and message.wParam in self.registered_hotkeys:
                 self.toggle_visibility()
-        for hotkey_id in self.registered_hotkeys:
-            user32.UnregisterHotKey(None, hotkey_id)
+            elif message.message == WM_HOTKEY_RELOAD:
+                with self.hotkey_lock:
+                    requested = self.hotkey_change_request
+                    self.hotkey_change_result = self._apply_hotkey_change(
+                        user32,
+                        requested,
+                    )
+                    self.hotkey_change_request = None
+                    self.hotkey_change_done.set()
+        with self.hotkey_lock:
+            self._unregister_all_hotkeys(user32)
 
     def start_hotkey(self) -> None:
         threading.Thread(target=self.hotkey_loop, name="formula-hotkey", daemon=True).start()
@@ -325,6 +539,7 @@ def set_windows_clipboard(text: str) -> bool:
 
 class Api:
     def get_bootstrap(self):
+        APP.hotkey_ready.wait(timeout=0.8)
         return {
             "appVersion": APP_VERSION,
             "formulas": FORMULAS,
@@ -332,10 +547,7 @@ class Api:
             "chapterOrder": CHAPTER_ORDER,
             "sources": SOURCES,
             "settings": APP.settings.data,
-            "hotkeys": {
-                "primary": HOTKEY_ID in APP.registered_hotkeys,
-                "fallback": HOTKEY_FALLBACK_ID in APP.registered_hotkeys,
-            },
+            "hotkeys": APP.hotkey_status(),
         }
 
     def set_favorite(self, card_id: str, enabled: bool) -> bool:
@@ -366,6 +578,9 @@ class Api:
             value = bool(value)
         APP.settings.set(key, value)
         return True
+
+    def set_hotkey(self, shortcut: str) -> dict:
+        return APP.update_hotkey(str(shortcut))
 
     def copy_text(self, text: str) -> bool:
         return set_windows_clipboard(str(text))

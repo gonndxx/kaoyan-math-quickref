@@ -364,6 +364,25 @@ mark { padding: 0 2px; border-radius: 3px; color: inherit; background: #fff0a8; 
 .shortcut-grid { display: grid; grid-template-columns: 145px 1fr; gap: 7px 12px; align-items: center; font-size: 10px; }
 .shortcut-grid > div { padding: 5px 0; border-bottom: 1px solid var(--border); }
 .shortcut-grid kbd { color: var(--text-2); }
+.hotkey-settings { margin-bottom: 17px; padding: 14px; border: 1px solid color-mix(in srgb, var(--accent) 38%, var(--border)); border-radius: 12px; background: var(--accent-soft); }
+.hotkey-settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; margin-bottom: 11px; }
+.hotkey-settings-head h3 { margin: 0 0 3px; color: var(--text); font-size: 13px; }
+.hotkey-settings-head p, .hotkey-rule { margin: 0; font-size: 9px; }
+.hotkey-state { flex: 0 0 auto; padding: 4px 7px; border-radius: 999px; background: var(--panel); color: var(--text-3); font-size: 8px; }
+.hotkey-state.is-ok, .hotkey-editor-status.is-ok { color: var(--success); }
+.hotkey-state.is-error, .hotkey-editor-status.is-error { color: var(--warning); }
+.hotkey-recorder { width: 100%; min-height: 58px; display: grid; grid-template-columns: 90px 1fr 78px; align-items: center; gap: 9px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--panel); color: var(--text); cursor: pointer; text-align: left; }
+.hotkey-recorder:hover, .hotkey-recorder:focus-visible { border-color: var(--accent); outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent); }
+.hotkey-recorder.is-recording { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+.hotkey-recorder .recorder-label, .hotkey-recorder .recorder-tip { color: var(--text-3); font-size: 9px; }
+.hotkey-recorder strong { font-size: 14px; letter-spacing: .2px; text-align: center; }
+.hotkey-recorder .recorder-tip { text-align: right; }
+.hotkey-rule { margin-top: 7px; }
+.hotkey-actions { min-height: 31px; display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+.secondary-button { border: 1px solid var(--border); border-radius: 8px; padding: 7px 11px; background: var(--panel); color: var(--text-2); cursor: pointer; font-size: 10px; }
+.secondary-button:hover { border-color: var(--accent); color: var(--accent); }
+.hotkey-actions button:disabled { cursor: wait; opacity: .55; }
+.hotkey-editor-status { flex: 1; font-size: 9px; text-align: right; }
 .toast {
   position: fixed; z-index: 80; left: 50%; bottom: 24px; transform: translate(-50%, 18px);
   padding: 9px 14px; border-radius: 9px; background: #18263b; color: #fff; box-shadow: var(--shadow);

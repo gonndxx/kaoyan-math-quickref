@@ -36,7 +36,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name="研数公式速查-2.0",
+    name="研数公式速查-2.1",
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
