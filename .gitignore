@@ -1,0 +1,10 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.py[cod]
+*.log
+.DS_Store
+Thumbs.db
+web/vendor_src/
+settings.json
